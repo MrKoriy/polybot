@@ -218,3 +218,52 @@ async def get_station_max_c(
               date=target_date_iso, max_c=round(max_c, 2),
               n_obs=len(temps_in_day))
     return max_c
+
+
+import re
+
+_UNIT_FAHRENHEIT_RE = re.compile(r"\b(?:fahrenheit|°f|degrees f)\b", re.IGNORECASE)
+_UNIT_CELSIUS_RE = re.compile(r"\b(?:celsius|°c|degrees c)\b", re.IGNORECASE)
+_AGENCY_RE = re.compile(r"\b(NOAA|National Weather Service|NWS|Hong Kong Observatory|Met Office|DWD|Meteo France|JMA|KMA)\b", re.IGNORECASE)
+_STATION_NAME_RE = re.compile(r"\bat the\s+([A-Za-z0-9\s\-]+?)\s+(?:Station|Airport|Observatory)\b", re.IGNORECASE)
+
+US_CITIES = {
+    "new york city", "new york", "nyc", "miami", "los angeles", "la", "chicago",
+    "dallas", "houston", "boston", "denver", "seattle", "phoenix", "atlanta",
+    "washington", "dc", "philadelphia", "san francisco", "sf"
+}
+
+
+def parse_resolution_source(description: str) -> dict:
+    """Parse Polymarket resolution description for station name, agency, and native unit."""
+    desc = description or ""
+    agency_m = _AGENCY_RE.search(desc)
+    agency = agency_m.group(1) if agency_m else None
+
+    station_m = _STATION_NAME_RE.search(desc)
+    station_name = station_m.group(1).strip() if station_m else None
+
+    unit = "C"
+    if _UNIT_FAHRENHEIT_RE.search(desc):
+        unit = "F"
+    elif _UNIT_CELSIUS_RE.search(desc):
+        unit = "C"
+
+    return {
+        "agency": agency,
+        "station_name": station_name,
+        "unit": unit,
+        "is_fahrenheit": (unit == "F"),
+    }
+
+
+def get_station_unit(city: str) -> str:
+    """Return native temperature unit ('F' or 'C') for Polymarket resolution."""
+    return "F" if city.lower().strip() in US_CITIES else "C"
+
+
+def get_station_timezone(city: str) -> str:
+    """Return IANA timezone for a station, default 'America/New_York'."""
+    info = get_station_for_city(city)
+    return info[1] if info else "America/New_York"
+

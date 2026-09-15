@@ -218,16 +218,19 @@ def _parse_weather_question(question: str) -> dict | None:
             # "65°F or below" — YES if temp <= 65
             return {"type": "temp_at_or_below", "city": city, "threshold_c": threshold_c,
                     "threshold_f": threshold if unit == "F" else threshold * 9/5 + 32,
+                    "unit": unit,
                     "date": m.group("date").strip()}
         elif bound == "or higher":
             # "16°C or higher" — YES if temp >= 16
             return {"type": "temp_at_or_above", "city": city, "threshold_c": threshold_c,
                     "threshold_f": threshold if unit == "F" else threshold * 9/5 + 32,
+                    "unit": unit,
                     "date": m.group("date").strip()}
         else:
             # Exact: "be 15°C" — YES if temp rounds to 15°C
             return {"type": "temp_exact", "city": city, "threshold_c": threshold_c,
                     "threshold_f": threshold if unit == "F" else threshold * 9/5 + 32,
+                    "unit": unit,
                     "date": m.group("date").strip()}
 
     # Try range: "between 66-67°F on April 1?"
@@ -246,6 +249,7 @@ def _parse_weather_question(question: str) -> dict | None:
         return {"type": "temp_range", "city": city, "low_c": low_c, "high_c": high_c,
                 "threshold_c": mid_c,
                 "threshold_f": mid if unit == "F" else mid * 9/5 + 32,
+                "unit": unit,
                 "date": m.group("date").strip()}
 
     return None
@@ -435,16 +439,21 @@ class WeatherTrader:
 
     async def _get_forecast(self, city: str, date_str: str) -> dict | None:
         """3-model ensemble forecast (GFS + ECMWF + ICON). Returns ensemble mean + σ."""
-        coords = CITY_COORDS.get(city)
-        if not coords:
-            return None
+        from bot.station_weather import get_station_for_city, get_station_timezone
+        station_info = get_station_for_city(city)
+        if station_info:
+            _, tz_name, lat, lon = station_info
+        else:
+            coords = CITY_COORDS.get(city)
+            if not coords:
+                return None
+            lat, lon = coords
+            tz_name = "America/New_York"
 
         cache_key = (city, date_str)
         cached = self._forecast_cache.get(cache_key)
         if cached and (_time.monotonic() - cached[1]) < 1800:
             return cached[0]
-
-        lat, lon = coords
 
         # Parse date like "April 1" / "Apr 1" to YYYY-MM-DD.
         now_utc = datetime.now(timezone.utc)
@@ -472,7 +481,7 @@ class WeatherTrader:
                 resp = await self._http.get(url, params={
                     "latitude": lat, "longitude": lon,
                     "daily": "temperature_2m_max",
-                    "timezone": "America/New_York",
+                    "timezone": tz_name,
                     "start_date": target_yyyymmdd, "end_date": target_yyyymmdd,
                 })
                 if resp.status_code != 200:
@@ -575,6 +584,15 @@ class WeatherTrader:
         Uses ensemble forecast mean + σ with Normal CDF to compute P(bucket).
         Works for ALL market types (at_or_above / at_or_below / exact / range).
         """
+        mtype = market.get("type")
+        # Capital-safety filter: refuse narrow exact temperature buckets.
+        # Uncertainty (±1-2°C) makes exact range betting a negative-EV lottery.
+        # Only trade directional tail endpoints (at_or_above, at_or_below).
+        ALLOW_EXACT_BUCKETS = False
+        if not ALLOW_EXACT_BUCKETS and mtype in ("temp_exact", "temp_range"):
+            log.debug("weather_skip_exact_bucket", city=market.get("city"), mtype=mtype)
+            return False
+
         forecast = await self._get_forecast(market["city"], market["date"])
         if not forecast:
             return False
@@ -607,40 +625,59 @@ class WeatherTrader:
         mean_c = forecast["temp_max_c"]
         sigma_c = forecast["sigma_c"]
 
-        # Compute P(YES) based on market type using Normal CDF.
-        # Polymarket temp markets quantise to 1°C / 2°F buckets. For bucket X,
-        # "actual = X" means rounded value equals X → actual ∈ [X-0.5°C, X+0.5°C].
-        # F-only markets use 2°F buckets = ~1.1°C wide → we use ±1°C half-width.
-        EXACT_BUCKET_HALF_C = 0.5
-        RANGE_PAD_C = 0.5
-
-        if mtype == "temp_at_or_above":
-            thr = market["threshold_c"]
-            our_prob_yes = 1.0 - _norm_cdf((thr - mean_c) / sigma_c) if sigma_c > 0 else (1.0 if mean_c >= thr else 0.0)
-            reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} thr=≥{thr:.0f}°C"
-
-        elif mtype == "temp_at_or_below":
-            thr = market["threshold_c"]
-            our_prob_yes = _norm_cdf((thr - mean_c) / sigma_c) if sigma_c > 0 else (1.0 if mean_c <= thr else 0.0)
-            reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} thr=≤{thr:.0f}°C"
-
-        elif mtype == "temp_exact":
-            # Bucket [thr - 0.5°C, thr + 0.5°C] (C markets are 1°C buckets)
-            thr = market["threshold_c"]
-            low = thr - EXACT_BUCKET_HALF_C
-            high = thr + EXACT_BUCKET_HALF_C
-            our_prob_yes = _prob_bucket(mean_c, sigma_c, low, high)
-            reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} bucket={thr:.0f}°C [{low:.1f},{high:.1f}]"
-
-        elif mtype == "temp_range":
-            # Range [low_c - pad, high_c + pad]. pad accounts for rounding.
-            low = market["low_c"] - RANGE_PAD_C
-            high = market["high_c"] + RANGE_PAD_C
-            our_prob_yes = _prob_bucket(mean_c, sigma_c, low, high)
-            reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} range=[{low:.1f},{high:.1f}]°C"
-
-        else:
+        # Capital-safety filter: refuse narrow exact temperature buckets.
+        # Uncertainty (±1-2°C) makes exact range betting a negative-EV lottery.
+        # Only trade directional tail endpoints (at_or_above, at_or_below).
+        ALLOW_EXACT_BUCKETS = False
+        if not ALLOW_EXACT_BUCKETS and mtype in ("temp_exact", "temp_range"):
+            log.debug("weather_skip_exact_bucket", city=market["city"], mtype=mtype)
             return False
+
+        is_fahrenheit = (market.get("unit") == "F")
+
+        if is_fahrenheit:
+            mean_f = mean_c * 1.8 + 32.0
+            sigma_f = sigma_c * 1.8
+            thr_f = market.get("threshold_f", 0.0)
+            if mtype == "temp_at_or_above":
+                our_prob_yes = 1.0 - _norm_cdf((thr_f - mean_f) / sigma_f) if sigma_f > 0 else (1.0 if mean_f >= thr_f else 0.0)
+                reasoning = f"fcst={mean_f:.1f}°F σ={sigma_f:.2f} thr=≥{thr_f:.0f}°F"
+            elif mtype == "temp_at_or_below":
+                our_prob_yes = _norm_cdf((thr_f - mean_f) / sigma_f) if sigma_f > 0 else (1.0 if mean_f <= thr_f else 0.0)
+                reasoning = f"fcst={mean_f:.1f}°F σ={sigma_f:.2f} thr=≤{thr_f:.0f}°F"
+            else:
+                return False
+        else:
+            EXACT_BUCKET_HALF_C = 0.5
+            RANGE_PAD_C = 0.5
+
+            if mtype == "temp_at_or_above":
+                thr = market["threshold_c"]
+                our_prob_yes = 1.0 - _norm_cdf((thr - mean_c) / sigma_c) if sigma_c > 0 else (1.0 if mean_c >= thr else 0.0)
+                reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} thr=≥{thr:.0f}°C"
+
+            elif mtype == "temp_at_or_below":
+                thr = market["threshold_c"]
+                our_prob_yes = _norm_cdf((thr - mean_c) / sigma_c) if sigma_c > 0 else (1.0 if mean_c <= thr else 0.0)
+                reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} thr=≤{thr:.0f}°C"
+
+            elif mtype == "temp_exact":
+                # Bucket [thr - 0.5°C, thr + 0.5°C] (C markets are 1°C buckets)
+                thr = market["threshold_c"]
+                low = thr - EXACT_BUCKET_HALF_C
+                high = thr + EXACT_BUCKET_HALF_C
+                our_prob_yes = _prob_bucket(mean_c, sigma_c, low, high)
+                reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} bucket={thr:.0f}°C [{low:.1f},{high:.1f}]"
+
+            elif mtype == "temp_range":
+                # Range [low_c - pad, high_c + pad]. pad accounts for rounding.
+                low = market["low_c"] - RANGE_PAD_C
+                high = market["high_c"] + RANGE_PAD_C
+                our_prob_yes = _prob_bucket(mean_c, sigma_c, low, high)
+                reasoning = f"fcst={mean_c:.1f}°C σ={sigma_c:.2f} range=[{low:.1f},{high:.1f}]°C"
+
+            else:
+                return False
 
         # Edge analysis
         yes_edge = our_prob_yes - yes_price

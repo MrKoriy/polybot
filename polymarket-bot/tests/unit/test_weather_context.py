@@ -51,3 +51,45 @@ def test_infer_target_date_from_legacy_trade_timestamp() -> None:
     inferred = WeatherTrader._infer_target_date(trade)
 
     assert inferred == "2026-04-21"
+
+
+def test_parse_weather_question_units() -> None:
+    from bot.weather_trader import _parse_weather_question
+
+    q_f = "Will the highest temperature in NYC be 65°F or below on April 1?"
+    p_f = _parse_weather_question(q_f)
+    assert p_f is not None
+    assert p_f["type"] == "temp_at_or_below"
+    assert p_f["unit"] == "F"
+    assert p_f["threshold_f"] == 65.0
+
+    q_c = "Will the highest temperature in London be 18°C or higher on May 2?"
+    p_c = _parse_weather_question(q_c)
+    assert p_c is not None
+    assert p_c["type"] == "temp_at_or_above"
+    assert p_c["unit"] == "C"
+    assert p_c["threshold_c"] == 18.0
+
+
+@pytest.mark.asyncio
+async def test_exact_bucket_rejected_by_default() -> None:
+    portfolio = _PortfolioStub(set())
+    trader = WeatherTrader(portfolio=portfolio)
+    market = {
+        "condition_id": "cond_exact",
+        "city": "tokyo",
+        "type": "temp_exact",
+        "threshold_c": 20.0,
+        "yes_price": 0.3,
+        "question": "Will the highest temperature in Tokyo be 20°C on April 21?",
+    }
+    # Should be rejected because ALLOW_EXACT_BUCKETS is False
+    trader._get_forecast = AsyncMock(return_value={
+        "temp_max_c": 20.1,
+        "sigma_c": 1.2,
+        "target_date": "2026-04-21",
+    })
+    res = await trader._evaluate_and_trade(market)
+    assert res is False
+    await trader._http.aclose()
+

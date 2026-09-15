@@ -143,3 +143,43 @@ class TestStationsCoverage:
             assert isinstance(tz, str) and "/" in tz
             assert -90 <= lat <= 90
             assert -180 <= lon <= 180
+
+
+class TestResolutionSourceParsing:
+    def test_parse_noaa_nyc_fahrenheit(self):
+        from bot.station_weather import parse_resolution_source
+        desc = (
+            "This market will resolve to the temperature range that contains the highest "
+            "temperature recorded by NOAA at the LaGuardia Airport Station in degrees Fahrenheit on 15 Sep '26."
+        )
+        parsed = parse_resolution_source(desc)
+        assert parsed["agency"] == "NOAA"
+        assert "LaGuardia" in parsed["station_name"]
+        assert parsed["unit"] == "F"
+        assert parsed["is_fahrenheit"] is True
+
+    def test_parse_hko_celsius(self):
+        from bot.station_weather import parse_resolution_source
+        desc = (
+            "This market will resolve to the temperature range that contains the highest "
+            "temperature recorded by the Hong Kong Observatory in degrees Celsius on 15 Sep '26."
+        )
+        parsed = parse_resolution_source(desc)
+        assert parsed["agency"] == "Hong Kong Observatory"
+        assert parsed["unit"] == "C"
+        assert parsed["is_fahrenheit"] is False
+
+    def test_get_station_unit(self):
+        from bot.station_weather import get_station_unit
+        assert get_station_unit("new york city") == "F"
+        assert get_station_unit("nyc") == "F"
+        assert get_station_unit("miami") == "F"
+        assert get_station_unit("london") == "C"
+        assert get_station_unit("tokyo") == "C"
+
+    def test_get_station_timezone(self):
+        from bot.station_weather import get_station_timezone
+        assert get_station_timezone("new york") == "America/New_York"
+        assert get_station_timezone("london") == "Europe/London"
+        assert get_station_timezone("tokyo") == "Asia/Tokyo"
+
