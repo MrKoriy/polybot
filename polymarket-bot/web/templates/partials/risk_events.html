@@ -1,0 +1,11 @@
+{% if events %}
+{% for e in events %}
+<div class="risk-row">
+    <span class="dim" style="white-space:nowrap;flex-shrink:0;">{{ e.time }}</span>
+    <span class="pill pill-no" style="flex-shrink:0;">{{ e.type }}</span>
+    <span class="dim" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ e.details }}</span>
+</div>
+{% endfor %}
+{% else %}
+<p class="dim" style="font-size:0.82rem;font-style:italic;">No risk events</p>
+{% endif %}

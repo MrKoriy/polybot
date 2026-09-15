@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg: #0d1117; --surface: #161b22; --border: #30363d;
+            --text: #e6edf3; --dim: #8b949e;
+            --green: #3fb950; --red: #f85149; --blue: #58a6ff; --yellow: #d29922;
+            --green-bg: rgba(63,185,80,0.08); --red-bg: rgba(248,81,73,0.08);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            max-width: 1280px; margin: 0 auto; padding: 16px;
+            line-height: 1.5; font-size: 14px;
+        }
+        .surface { background: var(--surface); border: 1px solid var(--border); }
+        .dim { color: var(--dim); }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .divider { border-color: var(--border); }
+        .row-hover:hover { background: rgba(255,255,255,0.025); }
+        .badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; }
+        .badge-green  { background: var(--green); color:#000; }
+        .badge-yellow { background: var(--yellow); color:#000; }
+        .badge-blue   { background: var(--blue); color:#000; }
+        .badge-red    { background: var(--red); color:#fff; }
+        .badge-dim    { background: rgba(139,148,158,0.15); color: var(--dim); }
+        .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:0.7rem; font-weight:600; }
+        .pill-yes  { background: rgba(63,185,80,0.15); color: var(--green); }
+        .pill-no   { background: rgba(248,81,73,0.15); color: var(--red); }
+        .pill-ok   { background: rgba(63,185,80,0.12); color: var(--green); }
+        .pill-grey { background: rgba(139,148,158,0.12); color: var(--dim); }
+        table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+        th { text-align:left; color:var(--dim); font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; padding:8px 8px 8px 0; border-bottom:1px solid var(--border); }
+        td { padding:8px 8px 8px 0; border-bottom:1px solid rgba(48,54,61,0.5); vertical-align:middle; }
+        .mono { font-family:'SF Mono',Consolas,monospace; }
+        .ctrl-btn {
+            padding: 5px 14px; border-radius:6px; font-size:0.8rem; font-weight:500;
+            background: var(--surface); border:1px solid var(--border); color: var(--text);
+            cursor:pointer; transition: border-color 0.15s, background 0.15s;
+        }
+        .ctrl-btn:hover { background: rgba(255,255,255,0.05); }
+        .ctrl-btn.pause:hover { border-color: var(--yellow); }
+        .ctrl-btn.resume:hover { border-color: var(--green); }
+        .section-label { font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.07em; color:var(--dim); }
+        .spinner { display:inline-block; width:12px; height:12px; border:2px solid rgba(139,148,158,0.3); border-top-color:var(--blue); border-radius:50%; animation:spin 0.8s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+        #equity-wrap { position:relative; height:220px; }
+        #equity-canvas { width:100% !important; }
+        #calibration-wrap { position:relative; height:200px; }
+
+        /* Time range buttons */
+        .range-btn {
+            padding: 3px 10px; border-radius:5px; font-size:0.72rem; font-weight:600;
+            background: transparent; border:1px solid var(--border); color: var(--dim);
+            cursor:pointer; transition: all 0.15s; text-transform:uppercase; letter-spacing:0.05em;
+        }
+        .range-btn:hover { border-color: var(--blue); color: var(--blue); }
+        .range-btn.active { background: rgba(88,166,255,0.12); border-color: var(--blue); color: var(--blue); }
+
+        /* Progress bar */
+        .prog-track { height:4px; background:rgba(139,148,158,0.15); border-radius:2px; overflow:hidden; margin-top:8px; }
+        .prog-fill  { height:100%; border-radius:2px; transition:width 0.4s ease; }
+
+        /* Card border accent */
+        .card-positive { border-left: 3px solid var(--green) !important; }
+        .card-negative { border-left: 3px solid var(--red) !important; }
+
+        /* Mobile bottom nav */
+        .mobile-nav {
+            display: none;
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: var(--surface); border-top: 1px solid var(--border);
+            z-index: 100; padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
+        .mobile-nav a {
+            flex: 1; display:flex; flex-direction:column; align-items:center;
+            padding: 8px 4px; color: var(--dim); text-decoration:none;
+            font-size:0.65rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;
+            transition: color 0.15s;
+        }
+        .mobile-nav a:hover { color: var(--text); }
+        .mobile-nav-icon { font-size:1.1rem; margin-bottom:2px; }
+
+        /* ── Responsive ──────────────────────────────── */
+        @media (max-width: 768px) {
+            .main-grid { grid-template-columns: 1fr !important; }
+            .header-controls { flex-direction: column; align-items: flex-start !important; gap: 8px !important; }
+            .summary-grid { grid-template-columns: repeat(2, 1fr) !important; }
+            .risk-grid { grid-template-columns: repeat(2, 1fr) !important; }
+            .mobile-nav { display: flex; }
+            body { padding-bottom: 70px; }
+        }
+        @media (max-width: 480px) {
+            .summary-grid { grid-template-columns: 1fr !important; }
+            .risk-grid { grid-template-columns: 1fr !important; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Header ───────────────────────────────────────────────────────────────── -->
+<header id="section-top" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0 18px;border-bottom:1px solid var(--border);margin-bottom:20px;" class="header-controls">
+    <div style="display:flex;align-items:center;gap:12px;">
+        <h1 style="font-size:1.25rem;font-weight:700;">&#x26A1; Polymarket Bot</h1>
+        <div id="bot-status" hx-get="/api/bot-status" hx-trigger="load, every 15s" hx-swap="innerHTML">
+            <span class="badge badge-yellow">Loading&#8230;</span>
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button class="ctrl-btn pause" onclick="controlBot('pause')">&#9646;&#9646; Pause</button>
+        <button class="ctrl-btn resume" onclick="controlBot('resume')">&#9654; Resume</button>
+        <span id="refresh-ts" class="dim" style="font-size:0.72rem;"></span>
+    </div>
+</header>
+
+<!-- ── Summary Cards ────────────────────────────────────────────────────────── -->
+<div id="section-summary" style="margin-bottom:16px;">
+    <div id="summary" hx-get="/api/summary" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <div class="summary-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;">
+            <div class="surface" style="border-radius:8px;padding:16px;"><div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Balance</div><div style="font-size:1.6rem;font-weight:700;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:16px;"><div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Total Value</div><div style="font-size:1.6rem;font-weight:700;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:16px;"><div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Daily P&amp;L</div><div style="font-size:1.6rem;font-weight:700;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:16px;"><div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Win Rate</div><div style="font-size:1.6rem;font-weight:700;">—</div></div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Risk Metrics Row ─────────────────────────────────────────────────────── -->
+<div id="section-risk">
+    <div id="risk-metrics" hx-get="/api/risk-metrics" hx-trigger="load, every 60s" hx-swap="innerHTML" style="margin-bottom:16px;">
+        <div class="risk-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+            <div class="surface" style="border-radius:8px;padding:14px 16px;"><div class="dim" style="font-size:0.72rem;">Sharpe Ratio</div><div style="font-size:1.4rem;font-weight:700;margin-top:4px;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:14px 16px;"><div class="dim" style="font-size:0.72rem;">Max Drawdown</div><div style="font-size:1.4rem;font-weight:700;margin-top:4px;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:14px 16px;"><div class="dim" style="font-size:0.72rem;">Brier Score</div><div style="font-size:1.4rem;font-weight:700;margin-top:4px;">—</div></div>
+            <div class="surface" style="border-radius:8px;padding:14px 16px;"><div class="dim" style="font-size:0.72rem;">Daily Loss Used</div><div style="font-size:1.4rem;font-weight:700;margin-top:4px;">—</div></div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Main 2-col grid ──────────────────────────────────────────────────────── -->
+<div id="section-equity" class="main-grid" style="display:grid;grid-template-columns:1fr 320px;gap:16px;margin-bottom:16px;">
+
+    <!-- Left: Equity chart -->
+    <div class="surface" style="border-radius:8px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">
+            <span class="section-label">Equity Curve</span>
+            <div style="display:flex;gap:4px;">
+                <button class="range-btn" onclick="setEquityRange(this,'1D')">1D</button>
+                <button class="range-btn" onclick="setEquityRange(this,'1W')">1W</button>
+                <button class="range-btn" onclick="setEquityRange(this,'1M')">1M</button>
+                <button class="range-btn active" onclick="setEquityRange(this,'ALL')">ALL</button>
+            </div>
+        </div>
+        <div id="equity" hx-get="/api/equity" hx-trigger="load, every 30s" hx-swap="innerHTML">
+            <div id="equity-wrap"><div style="display:flex;align-items:center;justify-content:center;height:220px;" class="dim"><span class="spinner" style="margin-right:6px;"></span>Loading&#8230;</div></div>
+        </div>
+    </div>
+
+    <!-- Right sidebar -->
+    <div style="display:flex;flex-direction:column;gap:12px;">
+
+        <!-- AutoResearch -->
+        <div class="surface" style="border-radius:8px;padding:16px;">
+            <div class="section-label" style="margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">AutoResearch</div>
+            <div id="research-stats" hx-get="/api/research" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <p class="dim" style="font-size:0.82rem;font-style:italic;">Loading&#8230;</p>
+            </div>
+        </div>
+
+        <!-- Risk Events -->
+        <div class="surface" style="border-radius:8px;padding:16px;flex:1;overflow:hidden;">
+            <div class="section-label" style="margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">Risk Events</div>
+            <div id="risk-events" hx-get="/api/risk-events" hx-trigger="load, every 30s" hx-swap="innerHTML" style="max-height:220px;overflow-y:auto;">
+                <p class="dim" style="font-size:0.82rem;font-style:italic;">Loading&#8230;</p>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ── Open Positions ───────────────────────────────────────────────────────── -->
+<div id="section-positions" class="surface" style="border-radius:8px;padding:16px;margin-bottom:16px;">
+    <div class="section-label" style="margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">Open Positions</div>
+    <div id="positions" hx-get="/api/positions" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <p class="dim" style="font-size:0.82rem;font-style:italic;">Loading positions&#8230;</p>
+    </div>
+</div>
+
+<!-- ── Trade History ────────────────────────────────────────────────────────── -->
+<div id="section-trades" class="surface" style="border-radius:8px;padding:16px;margin-bottom:16px;">
+    <div class="section-label" style="margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">
+        Trade History
+    </div>
+    <div id="trades" hx-get="/api/trades" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <p class="dim" style="font-size:0.82rem;font-style:italic;">Loading trades&#8230;</p>
+    </div>
+</div>
+
+<!-- ── Calibration Plot ─────────────────────────────────────────────────────── -->
+<div id="section-calibration" class="surface" style="border-radius:8px;padding:16px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);">
+        <span class="section-label">Calibration Plot</span>
+        <span class="dim" style="font-size:0.72rem;">Predicted vs Actual Probability</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start;">
+        <div id="calibration-wrap">
+            <div style="display:flex;align-items:center;justify-content:center;height:200px;" class="dim" id="calibration-loading">
+                <span class="spinner" style="margin-right:6px;"></span>Loading&#8230;
+            </div>
+            <canvas id="calibration-canvas" style="display:none;"></canvas>
+        </div>
+        <div id="calibration-stats" style="min-width:120px;font-size:0.78rem;color:var(--dim);padding-top:8px;"></div>
+    </div>
+</div>
+
+<footer style="text-align:center;padding:16px 0 8px;color:var(--dim);font-size:0.72rem;">
+    Polymarket AI Trading Bot &mdash; auto-refreshing every 10&ndash;30s
+    <!-- TODO: Add SSE (sse-starlette) for real-time push updates instead of polling -->
+</footer>
+
+<!-- ── Mobile Bottom Nav ────────────────────────────────────────────────────── -->
+<nav class="mobile-nav">
+    <a href="#section-summary">
+        <span class="mobile-nav-icon">$</span>
+        <span>Summary</span>
+    </a>
+    <a href="#section-equity">
+        <span class="mobile-nav-icon">&#x1F4C8;</span>
+        <span>Chart</span>
+    </a>
+    <a href="#section-positions">
+        <span class="mobile-nav-icon">&#x1F4CA;</span>
+        <span>Positions</span>
+    </a>
+    <a href="#section-trades">
+        <span class="mobile-nav-icon">&#x1F504;</span>
+        <span>Trades</span>
+    </a>
+</nav>
+
+<script>
+// ── HTMX JSON intercept ───────────────────────────────────────────────────────
+document.body.addEventListener('htmx:beforeSwap', function(evt) {
+    const id = evt.detail.target.id;
+
+    if (id === 'summary') {
+        try {
+            const d = JSON.parse(evt.detail.xhr.responseText);
+            const modeBadge = d.paper_mode
+                ? '<span class="badge badge-blue" style="margin-left:6px;">PAPER</span>'
+                : '<span class="badge badge-red"  style="margin-left:6px;">LIVE</span>';
+            const pnlCls   = (d.daily_pnl || 0) >= 0 ? 'positive' : 'negative';
+            const pnlBg    = (d.daily_pnl || 0) >= 0 ? 'var(--green-bg)' : 'var(--red-bg)';
+            const pnlBdr   = (d.daily_pnl || 0) >= 0 ? 'card-positive' : 'card-negative';
+            const sign     = (d.daily_pnl || 0) >= 0 ? '+' : '';
+            const sparkBal = makeSvgSparkline((d.sparkline || []).map(s => s.bankroll), 80, 30, true);
+            const sparkPnl = makeSvgSparkline((d.sparkline || []).map(s => s.pnl), 80, 30, (d.daily_pnl || 0) >= 0);
+
+            evt.detail.serverResponse = `
+            <div class="summary-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;">
+                <div class="surface" style="border-radius:8px;padding:16px;display:flex;flex-direction:column;justify-content:space-between;">
+                    <div>
+                        <div class="dim" style="font-size:0.75rem;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between;">
+                            <span>Cash Balance${d.paper_mode !== undefined ? modeBadge : ''}</span>
+                            ${sparkBal}
+                        </div>
+                        <div style="font-size:1.6rem;font-weight:700;" class="mono">$${(d.bankroll||0).toLocaleString()}</div>
+                        <div class="dim" style="font-size:0.72rem;margin-top:4px;">Open exposure&nbsp;$${(d.open_exposure||0).toLocaleString()}&nbsp;&bull;&nbsp;DD&nbsp;${d.drawdown_pct||0}%</div>
+                    </div>
+                </div>
+                <div class="surface" style="border-radius:8px;padding:16px;">
+                    <div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Total Value</div>
+                    <div style="font-size:1.6rem;font-weight:700;" class="mono">$${(d.total_value||0).toLocaleString()}</div>
+                    <div class="dim" style="font-size:0.72rem;margin-top:4px;">${d.open_positions||0} open position${(d.open_positions||0) !== 1 ? 's' : ''}&nbsp;&bull;&nbsp;U-P&amp;L&nbsp;$${(d.unrealized_pnl||0).toLocaleString()}</div>
+                </div>
+                <div class="surface ${pnlBdr}" style="border-radius:8px;padding:16px;background:${pnlBg};">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                        <div>
+                            <div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Daily P&amp;L</div>
+                            <div style="font-size:1.6rem;font-weight:700;" class="mono ${pnlCls}">$${sign}${d.daily_pnl||0}</div>
+                            <div class="dim" style="font-size:0.72rem;margin-top:4px;">Drawdown&nbsp;${d.drawdown_pct||0}%</div>
+                        </div>
+                        ${sparkPnl}
+                    </div>
+                </div>
+                <div class="surface" style="border-radius:8px;padding:16px;">
+                    <div class="dim" style="font-size:0.75rem;margin-bottom:4px;">Performance</div>
+                    <div style="font-size:1.6rem;font-weight:700;" class="mono">${d.win_rate||0}%</div>
+                    <div class="dim" style="font-size:0.72rem;margin-top:4px;">${d.wins||0}W&nbsp;/&nbsp;${d.losses||0}L (${d.total_trades||0} total)</div>
+                </div>
+            </div>`;
+            updateRefreshTs();
+        } catch(e) { console.error('summary parse error', e); }
+    }
+
+    if (id === 'bot-status') {
+        try {
+            const d = JSON.parse(evt.detail.xhr.responseText);
+            const cls = d.status === 'running' ? 'badge-green' : 'badge-yellow';
+            evt.detail.serverResponse = `
+                <span class="badge ${cls}">${d.status}</span>
+                <span class="dim" style="font-size:0.8rem;margin-left:8px;">Cycle #${d.cycle} &bull; ${d.interval}s</span>`;
+        } catch(e) {}
+    }
+
+    if (id === 'research-stats') {
+        try {
+            const d = JSON.parse(evt.detail.xhr.responseText);
+            if (d.status === 'disabled') {
+                evt.detail.serverResponse = '<p class="dim" style="font-size:0.82rem;font-style:italic;">AutoResearch disabled</p>';
+                return;
+            }
+            const dot   = d.running ? '<span style="color:var(--green);">&#9679;</span>' : '<span class="dim">&#9675;</span>';
+            const level = d.active_level ? `L${d.active_level}` : '&mdash;';
+            evt.detail.serverResponse = `
+            <div style="font-size:0.82rem;display:flex;flex-direction:column;gap:6px;">
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="dim">Status</span>
+                    <span style="font-weight:600;">${dot}&nbsp;${d.running ? 'Active' : 'Idle'}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="dim">Active Level</span>
+                    <span style="font-weight:600;">${level}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="dim">Experiments</span>
+                    <span style="font-weight:600;">${d.total_experiments}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="dim">Kept / Discarded</span>
+                    <span style="font-weight:600;">
+                        <span class="positive">${d.kept}</span> / <span class="negative">${d.discarded}</span>
+                    </span>
+                </div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span class="dim">Window</span>
+                    <span style="font-weight:600;">${d.experiment_window} cycles</span>
+                </div>
+            </div>`;
+        } catch(e) {}
+    }
+
+    if (id === 'risk-metrics') {
+        try {
+            const d = JSON.parse(evt.detail.xhr.responseText);
+            const sharpeVal   = d.sharpe !== null ? d.sharpe : '&mdash;';
+            const sharpeCls   = d.sharpe === null ? '' : d.sharpe >= 1 ? 'positive' : d.sharpe < 0 ? 'negative' : '';
+            const ddVal       = d.max_drawdown !== null ? d.max_drawdown + '%' : '&mdash;';
+            const ddWidth     = Math.min(d.max_drawdown || 0, 100);
+            const brierVal    = d.brier !== null ? d.brier : '&mdash;';
+            const brierCls    = d.brier === null ? '' : d.brier < 0.1 ? 'positive' : d.brier < 0.25 ? '' : 'negative';
+            const dlPct       = d.daily_loss_pct || 0;
+            const dlWidth     = Math.min(dlPct, 100);
+            const dlColor     = dlPct > 50 ? 'var(--red)' : dlPct > 25 ? 'var(--yellow)' : 'var(--green)';
+            const dlCls       = dlPct > 50 ? 'negative' : dlPct > 25 ? '' : 'positive';
+
+            evt.detail.serverResponse = `
+            <div class="risk-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                <div class="surface" style="border-radius:8px;padding:14px 16px;">
+                    <div class="section-label" style="margin-bottom:6px;">Sharpe Ratio</div>
+                    <div style="font-size:1.4rem;font-weight:700;" class="${sharpeCls}">${sharpeVal}</div>
+                    <div class="dim" style="font-size:0.7rem;margin-top:4px;">Annualized (252d)</div>
+                </div>
+                <div class="surface" style="border-radius:8px;padding:14px 16px;">
+                    <div class="section-label" style="margin-bottom:6px;">Max Drawdown</div>
+                    <div style="font-size:1.4rem;font-weight:700;" class="negative">${ddVal}</div>
+                    <div class="prog-track"><div class="prog-fill" style="width:${ddWidth}%;background:var(--red);"></div></div>
+                </div>
+                <div class="surface" style="border-radius:8px;padding:14px 16px;">
+                    <div class="section-label" style="margin-bottom:6px;">Brier Score</div>
+                    <div style="font-size:1.4rem;font-weight:700;" class="${brierCls}">${brierVal}</div>
+                    <div class="dim" style="font-size:0.7rem;margin-top:4px;">&#x2193; lower is better</div>
+                </div>
+                <div class="surface" style="border-radius:8px;padding:14px 16px;">
+                    <div class="section-label" style="margin-bottom:6px;">Daily Loss Used</div>
+                    <div style="font-size:1.4rem;font-weight:700;" class="${dlCls}">${dlPct}%</div>
+                    <div class="prog-track"><div class="prog-fill" style="width:${dlWidth}%;background:${dlColor};"></div></div>
+                </div>
+            </div>`;
+        } catch(e) { console.error('risk-metrics parse error', e); }
+    }
+});
+
+// ── Chart.js equity render ─────────────────────────────────────────────────────
+let equityChart = null;
+
+function renderEquityChart() {
+    const dataEl = document.getElementById('equity-data');
+    const canvas = document.getElementById('equity-canvas');
+    if (!dataEl || !canvas) return;
+    try {
+        const points = JSON.parse(dataEl.textContent);
+        if (!points || !points.length) return;
+        const labels   = points.map(p => p.date);
+        const values   = points.map(p => p.bankroll);
+        const drawdown = points.map(p => p.drawdown_pct || 0);
+        const pointColors = points.map(p => p.pnl >= 0 ? '#3fb950' : '#f85149');
+
+        if (equityChart) {
+            // In-place update — no flicker, no destroy
+            equityChart.data.labels = labels;
+            equityChart.data.datasets[0].data = values;
+            equityChart.data.datasets[0].pointBackgroundColor = pointColors;
+            equityChart.data.datasets[1].data = drawdown;
+            equityChart.update("none");
+            return;
+        }
+
+        equityChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Balance',
+                        data: values,
+                        borderColor: '#58a6ff',
+                        backgroundColor: 'rgba(88,166,255,0.07)',
+                        borderWidth: 2,
+                        pointRadius: points.length > 40 ? 0 : 3,
+                        pointHoverRadius: 5,
+                        pointBackgroundColor: pointColors,
+                        tension: 0.35,
+                        fill: true,
+                        yAxisID: 'y',
+                    },
+                    {
+                        label: 'Drawdown %',
+                        data: drawdown,
+                        borderColor: 'rgba(248,81,73,0.55)',
+                        backgroundColor: 'rgba(248,81,73,0.06)',
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        tension: 0.35,
+                        fill: true,
+                        yAxisID: 'y2',
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { color: '#8b949e', usePointStyle: true, boxWidth: 8, font: { size: 10 } }
+                    },
+                    tooltip: {
+                        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+                        titleColor: '#e6edf3', bodyColor: '#8b949e',
+                        callbacks: {
+                            label: ctx => {
+                                const p = points[ctx.dataIndex];
+                                if (ctx.datasetIndex === 0) {
+                                    const sign = p.pnl >= 0 ? '+' : '';
+                                    return [
+                                        ` Balance: $${ctx.parsed.y.toFixed(2)}`,
+                                        ` PnL: ${sign}$${p.pnl.toFixed(2)}`,
+                                        ` Trades: ${p.trades}`,
+                                    ];
+                                }
+                                return ` Drawdown: ${ctx.parsed.y.toFixed(1)}%`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e', maxTicksLimit: 7, font: { size: 10 } } },
+                    y: {
+                        position: 'left',
+                        grid: { color: '#30363d' },
+                        ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + v.toLocaleString() }
+                    },
+                    y2: {
+                        position: 'right',
+                        grid: { display: false },
+                        ticks: { color: '#f85149', font: { size: 10 }, callback: v => v.toFixed(1) + '%' },
+                        min: 0,
+                    }
+                }
+            }
+        });
+    } catch(e) { console.error('equity chart error', e); }
+}
+
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'equity') renderEquityChart();
+});
+
+// ── Time range selector ───────────────────────────────────────────────────────
+function setEquityRange(btn, range) {
+    document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const el = document.getElementById('equity');
+    el.setAttribute('hx-get', `/api/equity?range=${range}`);
+    htmx.process(el);
+    htmx.trigger(el, 'load');
+}
+
+function reloadTrades() {
+    const form = document.getElementById('trades-filters');
+    if (!form) return;
+    const params = new URLSearchParams(new FormData(form));
+    htmx.ajax('GET', `/api/trades?${params.toString()}`, {
+        target: '#trades',
+        swap: 'innerHTML',
+    });
+}
+
+// ── SVG Sparklines ────────────────────────────────────────────────────────────
+function makeSvgSparkline(values, w, h, isPositive) {
+    if (!values || values.length < 2) return '';
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const pts = values.map((v, i) => {
+        const x = (i / (values.length - 1)) * w;
+        const y = h - ((v - min) / range) * (h - 2) - 1;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const color = isPositive ? '#3fb950' : '#f85149';
+    return `<svg width="${w}" height="${h}" style="display:block;flex-shrink:0;"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/></svg>`;
+}
+
+// ── Calibration Plot ──────────────────────────────────────────────────────────
+let calibrationChart = null;
+
+function initCalibrationChart() {
+    const canvas = document.getElementById('calibration-canvas');
+    const loading = document.getElementById('calibration-loading');
+    const statsEl = document.getElementById('calibration-stats');
+    if (!canvas) return;
+
+    fetch('/api/calibration')
+        .then(r => r.json())
+        .then(points => {
+            if (loading) loading.style.display = 'none';
+            if (!points || !points.length) {
+                canvas.style.display = 'none';
+                if (statsEl) statsEl.innerHTML = '<span class="dim" style="font-style:italic;">No resolved predictions yet</span>';
+                return;
+            }
+            canvas.style.display = 'block';
+
+            const data = points.map(p => ({ x: p.pred, y: p.actual }));
+
+            // Compute calibration stats
+            const n = points.length;
+            const brier = points.reduce((s, p) => s + (p.pred - p.actual) ** 2, 0) / n;
+            const avgPred = points.reduce((s, p) => s + p.pred, 0) / n;
+            const avgActual = points.reduce((s, p) => s + p.actual, 0) / n;
+
+            if (statsEl) {
+                statsEl.innerHTML = `
+                    <div style="display:flex;flex-direction:column;gap:8px;font-size:0.78rem;">
+                        <div><span class="dim">Samples</span><br><strong>${n}</strong></div>
+                        <div><span class="dim">Brier Score</span><br><strong class="${brier < 0.1 ? 'positive' : brier < 0.25 ? '' : 'negative'}">${brier.toFixed(4)}</strong></div>
+                        <div><span class="dim">Avg Predicted</span><br><strong>${(avgPred * 100).toFixed(1)}%</strong></div>
+                        <div><span class="dim">Avg Actual</span><br><strong>${(avgActual * 100).toFixed(1)}%</strong></div>
+                    </div>`;
+            }
+
+            if (calibrationChart) {
+                calibrationChart.data.datasets[0].data = data;
+                calibrationChart.update("none");
+                return;
+            }
+
+            calibrationChart = new Chart(canvas, {
+                type: 'scatter',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Predictions',
+                            data,
+                            backgroundColor: 'rgba(88,166,255,0.55)',
+                            borderColor: 'rgba(88,166,255,0.8)',
+                            pointRadius: 5,
+                            pointHoverRadius: 7,
+                        },
+                        {
+                            label: 'Perfect calibration',
+                            data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+                            type: 'line',
+                            borderColor: 'rgba(63,185,80,0.45)',
+                            borderDash: [5, 4],
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+                            titleColor: '#e6edf3', bodyColor: '#8b949e',
+                            callbacks: {
+                                label: ctx => ` Pred: ${(ctx.parsed.x * 100).toFixed(1)}% → Actual: ${ctx.parsed.y}`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Predicted Probability', color: '#8b949e', font: { size: 10 } },
+                            min: 0, max: 1,
+                            grid: { color: '#30363d' },
+                            ticks: { color: '#8b949e', font: { size: 10 }, callback: v => (v * 100).toFixed(0) + '%' }
+                        },
+                        y: {
+                            title: { display: true, text: 'Actual Outcome', color: '#8b949e', font: { size: 10 } },
+                            min: -0.05, max: 1.05,
+                            grid: { color: '#30363d' },
+                            ticks: { color: '#8b949e', font: { size: 10 } }
+                        }
+                    }
+                }
+            });
+        })
+        .catch(e => {
+            console.error('calibration chart error', e);
+            if (loading) loading.innerHTML = '<span class="dim" style="font-style:italic;">Failed to load calibration data</span>';
+        });
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function updateRefreshTs() {
+    const el = document.getElementById('refresh-ts');
+    if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    updateRefreshTs();
+    setInterval(updateRefreshTs, 15000);
+    initCalibrationChart();
+});
+
+async function controlBot(action) {
+    try {
+        const r = await fetch('/api/bot-control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+        });
+        const d = await r.json();
+        console.log('bot-control:', d);
+        htmx.trigger('#bot-status', 'load');
+    } catch(e) { console.error('controlBot error', e); }
+}
+</script>
+</body>
+</html>

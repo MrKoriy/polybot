@@ -1,0 +1,76 @@
+<div id="trades-filters" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:0.72rem;color:var(--dim);">
+        <span>Month</span>
+        <select name="month" onchange="reloadTrades()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;">
+            <option value="ALL" {{ 'selected' if selected_month == 'ALL' else '' }}>All</option>
+            {% for month in months %}
+            <option value="{{ month }}" {{ 'selected' if selected_month == month else '' }}>{{ month }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:0.72rem;color:var(--dim);">
+        <span>Category</span>
+        <select name="category" onchange="reloadTrades()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;">
+            <option value="ALL" {{ 'selected' if selected_category == 'ALL' else '' }}>All</option>
+            {% for item in categories %}
+            <option value="{{ item }}" {{ 'selected' if selected_category == item else '' }}>{{ item }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:0.72rem;color:var(--dim);">
+        <span>Status</span>
+        <select name="status" onchange="reloadTrades()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;">
+            {% for item in ['ALL', 'open', 'filled', 'closed', 'cancelled'] %}
+            <option value="{{ item }}" {{ 'selected' if selected_status == item else '' }}>{{ item }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <div class="dim" style="font-size:0.75rem;padding-bottom:6px;">{{ total_count }} trade{{ '' if total_count == 1 else 's' }}</div>
+</div>
+
+{% if trades %}
+<div style="overflow-x:auto;">
+<table>
+    <thead>
+        <tr>
+            <th>Opened</th>
+            <th>Closed</th>
+            <th>Type</th>
+            <th style="width:26%;">Market</th>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Size</th>
+            <th>Edge</th>
+            <th>P&amp;L</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for t in trades %}
+        <tr class="row-hover">
+            <td class="dim" style="font-size:0.75rem;white-space:nowrap;">{{ t.created_at }}</td>
+            <td class="dim" style="font-size:0.75rem;white-space:nowrap;">{{ t.closed_at or '—' }}</td>
+            <td><span class="pill pill-grey">{{ t.category }}</span></td>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ t.question }}</td>
+            <td>
+                <span class="pill {{ 'pill-yes' if 'YES' in t.direction or 'UP' in t.direction else 'pill-no' }}">{{ t.direction }}</span>
+            </td>
+            <td class="mono" style="font-size:0.78rem;">${{ t.price }}</td>
+            <td class="mono" style="font-size:0.78rem;">${{ t.size }}</td>
+            <td style="font-size:0.78rem;">{{ t.edge }}%</td>
+            <td class="mono" style="font-size:0.78rem;font-weight:600;">
+                <span class="{{ 'positive' if t.pnl >= 0 else 'negative' }}">${{ '%+.2f'|format(t.pnl) }}</span>
+            </td>
+            <td>
+                <span class="pill {{ 'pill-ok' if t.status == 'filled' else 'pill-grey' }}">
+                    {{ t.status }}{% if t.paper %}&nbsp;(p){% endif %}
+                </span>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p class="dim" style="font-size:0.82rem;font-style:italic;padding:8px 0;">No trades yet. Bot is scanning for opportunities…</p>
+{% endif %}

@@ -1,0 +1,10 @@
+{% if points %}
+<div id="equity-wrap">
+    <canvas id="equity-canvas"></canvas>
+</div>
+<script id="equity-data" type="application/json">{{ points | tojson }}</script>
+{% else %}
+<div id="equity-wrap" style="display:flex;align-items:center;justify-content:center;height:220px;" class="dim">
+    No equity data yet. Will populate after the first trading day.
+</div>
+{% endif %}

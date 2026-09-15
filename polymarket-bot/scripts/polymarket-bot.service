@@ -1,0 +1,23 @@
+[Unit]
+Description=Polymarket Threshold Bot
+After=network-online.target socks-proxy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/polymarket-bot
+EnvironmentFile=/root/polymarket-bot/.env
+ExecStart=/root/polymarket-bot/.venv/bin/python -m bot.app
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-bot
+
+# Prevent runaway spawning on repeated crashes
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Install]
+WantedBy=multi-user.target

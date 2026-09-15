@@ -1,0 +1,41 @@
+{% if positions %}
+<div style="overflow-x:auto;">
+<table>
+    <thead>
+        <tr>
+            <th style="width:28%;">Market</th>
+            <th>Type</th>
+            <th>Opened</th>
+            <th>Expected Close</th>
+            <th>Side</th>
+            <th>Entry</th>
+            <th>Current</th>
+            <th>Size</th>
+            <th>P&amp;L</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in positions %}
+        <tr class="row-hover">
+            <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ p.question }}</td>
+            <td><span class="pill pill-grey">{{ p.category }}</span></td>
+            <td class="dim" style="font-size:0.75rem;white-space:nowrap;">{{ p.opened_at }}</td>
+            <td class="dim" style="font-size:0.75rem;white-space:nowrap;">{{ p.expected_close }}</td>
+            <td>
+                <span class="pill {{ 'pill-yes' if 'YES' in p.direction or 'UP' in p.direction else 'pill-no' }}">{{ p.direction }}</span>
+            </td>
+            <td class="mono">${{ p.entry_price }}</td>
+            <td class="mono">${{ p.current_price }}</td>
+            <td class="mono">${{ p.size }}</td>
+            <td class="mono" style="font-weight:600;">
+                <span class="{{ 'positive' if p.pnl >= 0 else 'negative' }}">${{ '%+.2f'|format(p.pnl) }}</span>
+                <span class="dim" style="font-size:0.72rem;font-weight:400;">&nbsp;({{ '%+.1f'|format(p.pnl_pct) }}%)</span>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p class="dim" style="font-size:0.82rem;font-style:italic;padding:8px 0;">No open positions</p>
+{% endif %}
