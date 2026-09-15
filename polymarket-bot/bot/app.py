@@ -460,8 +460,11 @@ class Application:
             interval_seconds=180,  # every 3 min, same as pipeline was
             job_id="stats_health",
         )
+        async def _job_refresh_positions():
+            await self._refresh_position_marks(portfolio=portfolio, polymarket=polymarket, ws=ws)
+
         scheduler.add_job(
-            lambda: self._refresh_position_marks(portfolio=portfolio, polymarket=polymarket, ws=ws),
+            _job_refresh_positions,
             interval_seconds=60,
             job_id="position_marks",
         )
