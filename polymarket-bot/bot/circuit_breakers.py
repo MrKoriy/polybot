@@ -96,7 +96,9 @@ class CircuitBreakerManager:
         # Set BEFORE _load_state() so a persisted peak survives restarts.
         self._peak_total_value: float = 0.0
         self._state: dict[str, BreakerState] = self._load_state()
-        self._last_check_ts: float = 0.0
+        # None = no sweep yet. A 0.0 sentinel compared against time.monotonic()
+        # silently skipped every sweep while host uptime was under 60s.
+        self._last_check_ts: float | None = None
         self._drawdown_pct = (
             self.DRAWDOWN_PCT if drawdown_pct is None else float(drawdown_pct)
         )
@@ -232,7 +234,7 @@ class CircuitBreakerManager:
     async def check_all(self) -> None:
         """Run all checks. Called by scheduler every N minutes."""
         now = _time.monotonic()
-        if now - self._last_check_ts < 60:
+        if self._last_check_ts is not None and now - self._last_check_ts < 60:
             return  # rate-limit: minimum 60s between full sweeps
         self._last_check_ts = now
 
