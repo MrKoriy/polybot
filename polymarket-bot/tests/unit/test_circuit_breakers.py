@@ -293,6 +293,47 @@ class TestReset:
         assert cbm.is_halted("weather")[0] is False
 
 
+class _FakeClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class TestRateLimit:
+    @pytest.mark.asyncio
+    async def test_first_sweep_runs_on_fresh_boot(self, state_file, telegram, monkeypatch):
+        # time.monotonic() counts from host boot; a fresh VM/container reads < 60s.
+        monkeypatch.setattr("bot.circuit_breakers._time", _FakeClock(5.0))
+        portfolio = _make_portfolio(bankroll=45.0, peak=100.0)
+        cbm = CircuitBreakerManager(portfolio, None, telegram, state_file)
+        _prime_peak(cbm, 100.0)
+        await cbm.check_all()
+        assert cbm.is_halted("weather")[0] is True
+
+    @pytest.mark.asyncio
+    async def test_sweeps_within_60s_are_skipped(
+        self, state_file, telegram, tmp_path, monkeypatch
+    ):
+        clock = _FakeClock(5.0)
+        monkeypatch.setattr("bot.circuit_breakers._time", clock)
+        flag = tmp_path / "kill"
+        monkeypatch.setattr("bot.circuit_breakers.EMERGENCY_FLAG_FILE", str(flag))
+        cbm = CircuitBreakerManager(_make_portfolio(), None, telegram, state_file)
+        await cbm.check_all()
+        assert cbm.is_halted("weather")[0] is False
+
+        flag.write_text("halt")
+        clock.now = 64.0
+        await cbm.check_all()
+        assert cbm.is_halted("weather")[0] is False
+
+        clock.now = 66.0
+        await cbm.check_all()
+        assert cbm.is_halted("weather")[0] is True
+
+
 class TestNoDoubleAlert:
     @pytest.mark.asyncio
     async def test_second_check_does_not_realert(self, state_file, telegram):
