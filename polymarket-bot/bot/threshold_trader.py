@@ -4,20 +4,23 @@ Finds "Will <asset> be above/below $X on <date>?" markets and prices them with
 a Black-Scholes binary-option (cash-or-nothing) probability using Binance spot
 + realized volatility. Trades when model edge vs market price exceeds the floor.
 
-Key decisions (see /Users/leonid/.claude/plans/wondrous-swinging-wand.md for why):
-- prob_above(S, K, T, sigma) via log-normal N(d2) — respects time-to-expiry and vol.
-- MIN_EDGE 3% (prev 5%) — BS gives calibrated edges, not step artifacts.
-- Adaptive Kelly multiplier by price bucket (deep OTM = bigger, coin-flip = smaller).
-- Dynamic exits: TP 80% at price>=0.80, SL on edge-evaporation, hold-to-resolve >0.90.
-- No lifetime dedup — same condition_id is re-tradable once position closes.
-- calibration_tracker records every signal so the model self-calibrates over time.
+Key decisions (Oct 2026 revision, see scripts/backtest_threshold_market.py):
+- prob_above(S, K, T, sigma) via log-normal N(d2), sigma = 30d realised vol x1.2.
+- Price off the executable book (bestBid/bestAsk), never Gamma display prices;
+  require spread <= 3c. Display mids on empty books are fake (~0.5).
+- Edge is NET of the ask and the crypto taker fee rate*p*(1-p).
+- Model is shrunk 50/50 toward the market; |model - market| > 15pp is treated
+  as bad input, not alpha.
+- Only the final 24h before expiry; entry price 0.50-0.95.
+- Honest backtest (May-Oct 2026, 5,812 resolved markets): WR ~85%, ROI ~+11%
+  per dollar after fees; out-of-sample (Aug 15+) WR 85.4%, ROI +10.2%.
 """
 import asyncio
 import json
 import math
 import re
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
@@ -42,10 +45,25 @@ MAX_THRESHOLD_POSITIONS = 25  # more room for multi-date × multi-asset × multi
 # Paper showed 100% WR because paper resolved via the bot's own Binance
 # oracle at exactly $1/$0 — a self-fulfilling validation. The floor must
 # clear fee + spread + oracle-source disagreement.
-MIN_EDGE = 0.05             # 5% net model edge — above round-trip costs
+# --- Oct 2026 strategy revision (validated on 5,812 resolved daily markets,
+# May-Oct 2026, real CLOB hourly prices + actual resolutions; see
+# scripts/backtest_threshold_market.py). Key findings:
+#  * Gamma `outcomePrices` on illiquid books is a fake ~0.5 mid (e.g. bid 0.13 /
+#    ask 1.00 shows as 0.57). ALL of the big "edges" (>15pp) came from these
+#    phantom prices. We now price off bestBid/bestAsk and require a tight book.
+#  * Crypto markets charge a taker fee rate*p*(1-p) (rate 0.07). The old 5%
+#    "net" edge never subtracted it.
+#  * Shrinking the BS model halfway toward the market, using a 30-day vol with
+#    a 1.2x fat-tail multiplier, and trading only the final 24h gave positive
+#    ROI in every month / asset / side, out-of-sample WR ~85%.
+MIN_EDGE = 0.02             # net edge AFTER paying ask + taker fee, on blended prob
+MODEL_WEIGHT = 0.5          # p = w*model + (1-w)*market (shrinkage toward market)
+MAX_MODEL_DISAGREEMENT = 0.15  # |model - mid| above this => our input is wrong, skip
+MAX_SPREAD = 0.03           # require a real two-sided book
+DEFAULT_TAKER_FEE_RATE = 0.07  # crypto_fees_v2: fee/share = rate * p * (1-p)
 MIN_VOLUME = 300.0
-MIN_HOURS_TO_EXPIRY = 0.08
-MAX_HOURS_TO_EXPIRY = 168.0
+MIN_HOURS_TO_EXPIRY = 0.5
+MAX_HOURS_TO_EXPIRY = 24.0  # only the final day: liquid books, honest prices
 
 # CRITICAL: minimum entry price. Below this, BS model is mispriced vs reality.
 MIN_PRICE_ENTRY = 0.50      # was implicit 0.02; now 50¢ hard floor
@@ -81,7 +99,8 @@ EXIT_MAX_AGE_HOURS = 48.0  # hard backstop if nothing else resolves
 
 # --- Volatility ---
 VOL_CACHE_TTL_SECONDS = 300  # refresh realized vol every 5 min
-VOL_CANDLES_HOURS = 48       # use last 48 × 1h returns for realized daily sigma
+VOL_CANDLES_HOURS = 720      # 30d × 1h returns — 48h was too noisy (backtest)
+VOL_MULT = 1.2               # fat-tail / vol-of-vol inflation of realised sigma
 
 # Patterns to match threshold market questions
 THRESHOLD_PATTERNS = [
@@ -92,6 +111,10 @@ THRESHOLD_PATTERNS = [
         re.IGNORECASE,
     ),
 ]
+
+_SERIES_ASSETS = ("bitcoin", "ethereum", "solana", "xrp")
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december")
 
 ASSET_TO_BINANCE = {
     "bitcoin": "BTCUSDT", "btc": "BTCUSDT",
@@ -143,6 +166,62 @@ def prob_above(S: float, K: float, T_hours: float, sigma_daily: float) -> float:
     return _norm_cdf(d2)
 
 
+def taker_fee_per_share(price: float, rate: float = DEFAULT_TAKER_FEE_RATE,
+                        exponent: float = 1.0) -> float:
+    """Polymarket CLOB V2 dynamic taker fee per share: rate * (p*(1-p))^exp."""
+    if not 0.0 < price < 1.0 or rate <= 0:
+        return 0.0
+    return rate * (price * (1.0 - price)) ** exponent
+
+
+def score_threshold_signal(
+    *,
+    spot: float,
+    threshold: float,
+    is_above: bool,
+    t_hours: float,
+    sigma_daily: float,
+    best_bid: float | None,
+    best_ask: float | None,
+    fee_rate: float = DEFAULT_TAKER_FEE_RATE,
+    fee_exponent: float = 1.0,
+) -> dict | None:
+    """Pure signal logic shared by the live trader and the backtest.
+
+    Prices off the executable book (YES ask / NO = 1 - YES bid), never the
+    Gamma display price. Returns None when there is no tradeable edge.
+    """
+    if t_hours < MIN_HOURS_TO_EXPIRY or t_hours > MAX_HOURS_TO_EXPIRY:
+        return None
+    if best_bid is None or best_ask is None:
+        return None
+    if not (0.0 < best_bid < best_ask < 1.0):
+        return None
+    if best_ask - best_bid > MAX_SPREAD:
+        return None
+    sigma = max(0.01, min(0.20, sigma_daily)) * VOL_MULT
+    p_above = prob_above(spot, threshold, t_hours, sigma)
+    model_yes = p_above if is_above else 1.0 - p_above
+    mid_yes = (best_bid + best_ask) / 2.0
+    if abs(model_yes - mid_yes) > MAX_MODEL_DISAGREEMENT:
+        return None
+    prob_yes = MODEL_WEIGHT * model_yes + (1.0 - MODEL_WEIGHT) * mid_yes
+
+    best = None
+    for side, prob, price in (("YES", prob_yes, best_ask), ("NO", 1.0 - prob_yes, 1.0 - best_bid)):
+        if price < MIN_PRICE_ENTRY or price > MAX_PRICE_ENTRY:
+            continue
+        fee = taker_fee_per_share(price, fee_rate, fee_exponent)
+        edge = prob - price - fee
+        if edge > MIN_EDGE and (best is None or edge > best["edge"]):
+            best = {"side": side, "price": price, "edge": edge, "fee": fee}
+    if best is None:
+        return None
+    best.update(our_prob_yes=prob_yes, model_prob_yes=model_yes, mid_yes=mid_yes,
+                sigma=sigma)
+    return best
+
+
 def _parse_threshold_question(question: str) -> dict | None:
     for pat in THRESHOLD_PATTERNS:
         m = pat.search(question)
@@ -161,6 +240,13 @@ def _parse_threshold_question(question: str) -> dict | None:
                 "date": m.group("date").strip(),
             }
     return None
+
+
+def _opt_float(v, default: float | None = None) -> float | None:
+    try:
+        return float(v) if v is not None and v != "" else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_end_date(end_date_str: str) -> datetime | None:
@@ -598,6 +684,19 @@ class ThresholdTrader:
                             for mkt in event.get("markets", []):
                                 all_markets.append(mkt)
 
+            # Daily "<asset> above ___ on <date>" series by slug — the volume
+            # scans above miss most of them. Only today/tomorrow matter given
+            # MAX_HOURS_TO_EXPIRY = 24h.
+            today = datetime.now(timezone.utc).date()
+            for asset in _SERIES_ASSETS:
+                for d_off in (0, 1):
+                    d = today + timedelta(days=d_off)
+                    slug = f"{asset}-above-on-{_MONTHS[d.month - 1]}-{d.day}-{d.year}"
+                    resp = await self._http.get(f"{GAMMA_API}/events", params={"slug": slug})
+                    if resp.status_code == 200:
+                        for event in resp.json() or []:
+                            all_markets.extend(event.get("markets", []) or [])
+
             # Dedicated crypto-price events scan (P4.1)
             for slug in ["bitcoin", "ethereum", "solana", "xrp"]:
                 resp = await self._http.get(
@@ -637,6 +736,7 @@ class ThresholdTrader:
                     continue
 
                 end_date = _parse_end_date(m.get("endDate", ""))
+                fee_sched = m.get("feeSchedule") or {}
 
                 results.append({
                     **parsed,
@@ -648,6 +748,11 @@ class ThresholdTrader:
                     "no_token": str(tokens[1]) if len(tokens) > 1 else "",
                     "volume": volume,
                     "end_date": end_date,
+                    "best_bid": _opt_float(m.get("bestBid")),
+                    "best_ask": _opt_float(m.get("bestAsk")),
+                    "fee_rate": _opt_float(fee_sched.get("rate"), DEFAULT_TAKER_FEE_RATE)
+                    if m.get("feesEnabled", True) else 0.0,
+                    "fee_exponent": _opt_float(fee_sched.get("exponent"), 1.0),
                 })
 
         except Exception:
@@ -686,33 +791,25 @@ class ThresholdTrader:
             return None
 
         sigma = await self._get_sigma_daily(asset_key)
-        p_above = prob_above(current_price, market["threshold"], T_hours, sigma)
-
         is_above = market["direction"] == "above"
-        our_prob_yes = p_above if is_above else (1.0 - p_above)
-
-        yes_price = market["yes_price"]
-
-        # OTM tail-bias: historically Polymarket under-prices low-probability tails.
-        # Boost our prob_yes if the *cheap* side sits in the OTM bucket (<20¢ price).
-        # This is what the old step-function did implicitly — we restore it explicitly
-        # because Apr 4-7 data showed 87.5% WR and +$3894 on <10¢ long-shots.
-        if yes_price < OTM_BIAS_MAX_PRICE:
-            our_prob_yes = min(1.0, our_prob_yes + OTM_BIAS_BOOST)
-        elif (1.0 - yes_price) < OTM_BIAS_MAX_PRICE:
-            our_prob_yes = max(0.0, our_prob_yes - OTM_BIAS_BOOST)
-
-        yes_edge = our_prob_yes - yes_price
-        no_edge = (1.0 - our_prob_yes) - (1.0 - yes_price)
-
-        if yes_edge > MIN_EDGE and yes_edge >= no_edge:
-            side, token_id, price, edge = "YES", market["yes_token"], yes_price, yes_edge
-        elif no_edge > MIN_EDGE and no_edge > yes_edge:
-            side, token_id, price, edge = "NO", market["no_token"], 1.0 - yes_price, no_edge
-        else:
+        sig = score_threshold_signal(
+            spot=current_price,
+            threshold=market["threshold"],
+            is_above=is_above,
+            t_hours=T_hours,
+            sigma_daily=sigma,
+            best_bid=market.get("best_bid"),
+            best_ask=market.get("best_ask"),
+            fee_rate=market.get("fee_rate", DEFAULT_TAKER_FEE_RATE),
+            fee_exponent=market.get("fee_exponent", 1.0),
+        )
+        if sig is None:
             return None
-
-        if not token_id or price < MIN_PRICE_ENTRY or price > MAX_PRICE_ENTRY:
+        side, price, edge = sig["side"], sig["price"], sig["edge"]
+        our_prob_yes = sig["our_prob_yes"]
+        sigma = sig["sigma"]
+        token_id = market["yes_token"] if side == "YES" else market["no_token"]
+        if not token_id:
             return None
 
         return {
